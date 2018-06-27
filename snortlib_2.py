@@ -1,3 +1,6 @@
+
+	
+
 # Copyright (C) 2013 Nippon Telegraph and Telephone Corporation.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -93,34 +96,54 @@ class SnortLib2(app_manager.RyuApp):
 	sw_snort = self.net_config.get('sw_snort')
 	port_vig = self.net_config.get('port_vig')
 	self.logger.info( "SW en el que esta SNORT: SW" + str(sw_snort) + " Y PUERTO A ESCUCHAR: PORT" + str(snort_port))
+	
 	self.decorator_OFPPacketOut(parser.OFPPacketOut) 
 	self.decorator_OFPFlowMod(parser.OFPFlowMod)
 	
 
+
     #ADD_FLOW
-    def add_drop_rule(self, datapath, priority, match):
+    def add_drop_rule(self, datapath, pkt):
         
+		
+	priority=32768
 	ofproto = datapath.ofproto
         of_parser = datapath.ofproto_parser
+
+	
+        eth = pkt.get_protocol(ethernet.ethernet)
+        _ipv4 = pkt.get_protocol(ipv4.ipv4)
+        _icmp = pkt.get_protocol(icmp.icmp)
+
+	match=of_parser.OFPMatch(eth_type=ether.ETH_TYPE_IP, ip_proto=inet.IPPROTO_ICMP, ipv4_dst=_ipv4.dst, ipv4_src=_ipv4.src)
         inst = [of_parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS, [])]
         mod = of_parser.OFPFlowMod(datapath=datapath, priority=priority,
                                 match=match, instructions=inst)
         datapath.send_msg(mod)
-	
+
+	#Deleting_flow
+	self.delete_flow(datapath, pkt)
+
 
     #DELETE_FLOW
-    def delete_flow(self, datapath):
-	   
+    def delete_flow(self, datapath, pkt):
+	    
 	ofp = datapath.ofproto
 	parser = datapath.ofproto_parser    
+
+	eth = pkt.get_protocol(ethernet.ethernet)
 	port_vig= self.net_config.get('port_vig')
-	match = parser.OFPMatch(in_port=port_vig)
+	match = parser.OFPMatch(in_port=port_vig, eth_src=eth.src)
 	instructions= []
+
+	
 	flow_mod = parser.OFPFlowMod(datapath, 0, 0, 0,ofp.OFPFC_DELETE, 0, 0, 1,ofp.OFPCML_NO_BUFFER,ofp.OFPP_ANY,ofp.OFPP_ANY, ofp.OFPFF_SEND_FLOW_REM, match, instructions)
 	datapath.send_msg(flow_mod)
 
-	
+     	
+
     def decorator_OFPPacketOut(self, func):
+	
 	
 	old_constructorPOut=func.__init__	
 	snort_port = self.net_config.get('snort_port')
@@ -129,8 +152,10 @@ class SnortLib2(app_manager.RyuApp):
 	def new_constructorPOut(self, datapath, buffer_id=None, in_port=None, actions=None,
                  data=None, actions_len=None):
 	    if datapath.id == sw_snort and actions is not None:
+		   
 		    for action in actions:
 			if action.type == 0:
+		    	    
 		    	    actions.append(parser.OFPActionOutput(snort_port))
 			    
 			    return old_constructorPOut(self, datapath, buffer_id, in_port, actions,
@@ -142,7 +167,7 @@ class SnortLib2(app_manager.RyuApp):
 
 
     def decorator_OFPFlowMod(self, func):
-
+	
 	old_constructorFlowMod=func.__init__	
 
 	snort_port = self.net_config.get('snort_port')
@@ -156,6 +181,7 @@ class SnortLib2(app_manager.RyuApp):
                  out_port=0, out_group=0, flags=0,
                  match=None,
                  instructions=None):
+    	
 
             if instructions is not None and datapath.id == sw_snort:
 			    for instruction in instructions:
@@ -163,15 +189,15 @@ class SnortLib2(app_manager.RyuApp):
 
 					if (instruction.actions is not None):
 						for action in instruction.actions:
+						   
 						    if action.type == 0:
-
+							
 							if action.port == snort_port:
 
 								return old_constructorFlowMod(self, datapath, cookie, cookie_mask, table_id, command, idle_timeout, hard_timeout, priority, buffer_id, out_port, out_group, flags, match, instructions)
 							else:
-					
-								instruction.actions.append(parser.OFPActionOutput(snort_port))
 								
+								instruction.actions.append(parser.OFPActionOutput(snort_port))
 								return old_constructorFlowMod(self, datapath, cookie, cookie_mask, table_id, command, idle_timeout, hard_timeout, priority, buffer_id, out_port, out_group, flags, match, instructions)
                                                   
 	    return old_constructorFlowMod(self, datapath, cookie, cookie_mask, table_id, command, idle_timeout, hard_timeout, priority, buffer_id, out_port, out_group, flags, match, instructions)
@@ -185,7 +211,7 @@ class SnortLib2(app_manager.RyuApp):
 	
 	msg = ev.msg
 	sw_snort = self.net_config.get('sw_snort')
-	print("ALERTA---")
+	print("ALERTA-----------------------")
         print('alertmsg: %s' % ''.join(msg.alertmsg))	
     
 	pkt = packet.Packet(array.array('B', msg.pkt))
@@ -204,17 +230,11 @@ class SnortLib2(app_manager.RyuApp):
             self.logger.info("%r", eth)
 
 
-	datapath_sw_snort = ofctl_api.get_datapath(self, dpid=sw_snort)
-
 	#Modifying flow
-        of_parser = datapath_sw_snort.ofproto_parser
-	block_dst = _ipv4.dst
-	block_src = _ipv4.src
-	match = of_parser.OFPMatch(eth_dst = eth.dst, eth_type=ether.ETH_TYPE_IP, ip_proto= inet.IPPROTO_ICMP, ipv4_dst=block_dst)
-	self.add_drop_rule(datapath_sw_snort, 5, match)
+	datapath_sw_snort = ofctl_api.get_datapath(self, dpid=sw_snort)
+	self.add_drop_rule(datapath_sw_snort, pkt)
 
-	#Deleting_flow
-	self.delete_flow(datapath_sw_snort)
+	
 
    ############
 
@@ -294,9 +314,5 @@ class SnortLib2(app_manager.RyuApp):
 
 
 #####
-
-
-
-
 
 
